@@ -1,0 +1,16 @@
+{
+  "name": "nexus-lifecycle-sbom-poc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Container and CycloneDX SBOM exchange demonstration",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "build": "node scripts/build.js",
+    "start": "node dist/app.js"
+  },
+  "dependencies": {
+    "uuid": "11.1.0"
+  }
+}

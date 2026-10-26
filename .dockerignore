@@ -1,0 +1,9 @@
+.git
+node_modules
+dist
+evidence
+Jenkinsfile
+README.md
+**/.npmrc
+**/*.pem
+**/*.key
