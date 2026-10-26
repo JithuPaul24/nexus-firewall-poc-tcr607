@@ -8,9 +8,9 @@ pipeline {
     parameters {
         booleanParam(name: 'RUN_IQ_EVALUATION', defaultValue: false,
             description: 'Evaluate the built container using the Sonatype Platform Plugin. This does not import the generated SBOM.')
-        string(name: 'IQ_INSTANCE_ID', defaultValue: '',
+        string(name: 'IQ_INSTANCE_ID', defaultValue: 'iq-server',
             description: 'Instance ID from the Sonatype Platform Plugin configuration in Jenkins, not the IQ URL.')
-        string(name: 'IQ_APPLICATION_ID', defaultValue: '',
+        string(name: 'IQ_APPLICATION_ID', defaultValue: '3458',
             description: 'Existing Lifecycle application ID used for policy evaluation.')
         choice(name: 'IQ_STAGE', choices: ['build', 'develop', 'source', 'stage-release', 'release', 'operate'],
             description: 'Choose a stage available under your Lifecycle licence and configured policies.')
