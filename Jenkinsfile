@@ -6,13 +6,14 @@ pipeline {
         timeout(time: 30, unit: 'MINUTES')
     }
     parameters {
-        booleanParam(name: 'SUBMIT_TO_IQ', defaultValue: false,
-            description: 'Enable only after confirming the installed Lifecycle API accepts raw CycloneDX JSON.')
-        string(name: 'IQ_SBOM_IMPORT_URL', defaultValue: '',
-            description: 'Documented full POST URL, including application/stage where required. Not the UI URL.')
-        choice(name: 'IQ_CONTENT_TYPE',
-            choices: ['application/json', 'application/vnd.cyclonedx+json', 'application/octet-stream'],
-            description: 'Use the content type required by the verified import API.')
+        booleanParam(name: 'RUN_IQ_EVALUATION', defaultValue: false,
+            description: 'Evaluate the built container using the Sonatype Platform Plugin. This does not import the generated SBOM.')
+        string(name: 'IQ_INSTANCE_ID', defaultValue: '',
+            description: 'Instance ID from the Sonatype Platform Plugin configuration in Jenkins, not the IQ URL.')
+        string(name: 'IQ_APPLICATION_ID', defaultValue: '',
+            description: 'Existing Lifecycle application ID used for policy evaluation.')
+        choice(name: 'IQ_STAGE', choices: ['build', 'develop', 'source', 'stage-release', 'release', 'operate'],
+            description: 'Choose a stage available under your Lifecycle licence and configured policies.')
     }
     environment {
         SYFT_IMAGE = 'anchore/syft:v1.20.0'
@@ -29,8 +30,9 @@ pipeline {
                     ]]
                 )
                 script {
-                    if (params.SUBMIT_TO_IQ && !params.IQ_SBOM_IMPORT_URL?.trim()) {
-                        error('Provide the verified Lifecycle raw-SBOM POST URL before enabling submission.')
+                    if (params.RUN_IQ_EVALUATION &&
+                        (!params.IQ_INSTANCE_ID?.trim() || !params.IQ_APPLICATION_ID?.trim())) {
+                        error('Provide IQ_INSTANCE_ID and IQ_APPLICATION_ID before enabling policy evaluation.')
                     }
                     env.APP_IMAGE = 'nexus-lifecycle-sbom-poc:' + env.BUILD_TAG.toLowerCase().replaceAll('[^a-z0-9_.-]', '-').take(100)
                 }
@@ -73,25 +75,42 @@ pipeline {
                 '''
             }
         }
-        stage('Submit SBOM to Lifecycle') {
-            when { expression { params.SUBMIT_TO_IQ } }
+        stage('Lifecycle container policy evaluation') {
+            when { expression { params.RUN_IQ_EVALUATION } }
             steps {
-                withEnv([
-                    "IQ_SBOM_IMPORT_URL=${params.IQ_SBOM_IMPORT_URL.trim()}",
-                    "IQ_CONTENT_TYPE=${params.IQ_CONTENT_TYPE}"
-                ]) {
-                    withCredentials([usernamePassword(credentialsId: 'iq-cred',
-                        usernameVariable: 'IQ_USER', passwordVariable: 'IQ_PASS')]) {
-                        sh 'set +x; python3 scripts/submit_sbom.py'
-                    }
+                sh 'date -u > evidence/iq-evaluation-start.txt'
+                script {
+                    writeFile file: 'evidence/iq-evaluation-target.json', text: groovy.json.JsonOutput.prettyPrint(
+                        groovy.json.JsonOutput.toJson([
+                            instanceId: params.IQ_INSTANCE_ID.trim(),
+                            applicationId: params.IQ_APPLICATION_ID.trim(),
+                            stage: params.IQ_STAGE,
+                            scanTarget: "container:${env.APP_IMAGE}",
+                            mode: 'container-policy-evaluation-not-external-sbom-import'
+                        ])
+                    )
                 }
-                unstable('HTTP submission accepted. Confirm completed Lifecycle evaluation and inventory before declaring TC07 PASS.')
+                nexusPolicyEvaluation(
+                    iqInstanceId: params.IQ_INSTANCE_ID.trim(),
+                    iqApplication: params.IQ_APPLICATION_ID.trim(),
+                    iqStage: params.IQ_STAGE,
+                    iqScanPatterns: [[scanPattern: "container:${env.APP_IMAGE}"]],
+                    jobCredentialsId: 'iq-cred',
+                    failBuildOnNetworkError: true,
+                    failBuildOnScanningErrors: true
+                )
+                echo 'Open IQ Build Report / View Application Report for components and policy findings. The external SBOM import remains a separate TC07 check.'
+            }
+            post {
+                always {
+                    sh 'date -u > evidence/iq-evaluation-end.txt'
+                }
             }
         }
         stage('Generation-only result') {
-            when { expression { !params.SUBMIT_TO_IQ } }
+            when { expression { !params.RUN_IQ_EVALUATION } }
             steps {
-                echo 'SBOM generated and archived. Lifecycle submission was disabled; TC07 import is NOT tested.'
+                echo 'SBOM generated and archived. Lifecycle container evaluation was disabled; external SBOM import is NOT tested.'
             }
         }
     }

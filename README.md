@@ -1,26 +1,25 @@
 # TC-R6-07: Application, container and CycloneDX SBOM
 
 This isolated PoC builds a Node.js API, tests it, builds a non-root runtime image,
-generates an image SBOM with Syft, and optionally POSTs the SBOM to a verified
-Sonatype Lifecycle import API. It does not push the container image to a registry.
+generates an image SBOM with Syft, and optionally evaluates the same container
+with the Sonatype Platform Plugin for Jenkins. It does not push the container
+image to a registry or import the generated SBOM into Lifecycle.
 
-## Important Lifecycle prerequisite
+## Documented Lifecycle integration
 
-The installed Lifecycle version and its SBOM import interface have not been supplied.
-No version-specific URL or import capability is assumed here. Submission defaults
-to off so the application/image/SBOM workflow can be tested independently.
+The integration follows the [Sonatype Platform Plugin for Jenkins documentation](https://help.sonatype.com/en/sonatype-platform-plugin-for-jenkins.html)
+provided for this PoC. It uses `nexusPolicyEvaluation` with the documented
+`container:` scan target. Evaluation defaults to off so the application, image
+and SBOM generation can be checked before configuring the IQ connection.
 
-Before enabling submission, ask the Sonatype PoC engineer to confirm:
+The plugin documentation provided does not establish support for importing an
+external CycloneDX file. Pointing `iqScanPatterns` at a JSON file is not evidence
+that its SBOM contents were imported. The previous speculative HTTP uploader has
+been removed rather than retained as an unverified submission path.
 
-- The installed version accepts CycloneDX JSON produced by the pinned Syft release.
-- The full application-specific POST URL and stage configuration.
-- The endpoint accepts a raw SBOM request body with HTTP Basic authentication.
-- The required content type and how to retrieve the resulting evaluation/report.
-
-If the documented API requires multipart form data, an archive, a different
-authentication scheme, or a CLI import command, the uploader must be adapted first.
-Do not point it at the Lifecycle UI or a Repository Manager hosted repository.
-Storing a JSON file in Repository Manager does not evaluate it in Lifecycle.
+For TC07's external-SBOM exchange requirement, obtain the separately documented
+import interface and supported CycloneDX version from Sonatype. Storing a JSON
+file in Repository Manager does not evaluate it in Lifecycle.
 
 ## Jenkins setup
 
@@ -28,18 +27,34 @@ Storing a JSON file in Repository Manager does not evaluate it in Lifecycle.
 2. Allow the Docker engine to reach the Node image registry, npm and the Syft image
    registry. This sample uses public upstream dependencies, not Nexus package proxies.
 3. Create a username/password credential named `git-acess` for repository checkout.
-4. Create a separate username/password credential named `iq-cred` with permission
-   to submit an evaluation for the chosen Lifecycle application.
-5. Create a Pipeline job using **Pipeline script from SCM**, Git URL
+4. Install a compatible Sonatype Platform Plugin for Jenkins that exposes the
+   `nexusPolicyEvaluation` step and the documented scanning-error option.
+5. Configure the IQ server connection in the plugin's global configuration. Record
+   its instance ID; `IQ_INSTANCE_ID` is that configured ID, not the server URL.
+6. Create a separate username/password credential named `iq-cred` with permission
+   to evaluate the chosen Lifecycle application. The pipeline supplies it using
+   the documented `jobCredentialsId` override. Use the credential type supported
+   by your installed plugin and server configuration.
+7. Create the application in Lifecycle, record its application ID and configure
+   policy actions for the intended stage. The pipeline does not request automatic
+   application creation or specify an organization.
+8. Create a Pipeline job using **Pipeline script from SCM**, Git URL
    `https://github.com/JithuPaul24/nexus-firewall-poc-tcr607.git`, credential
    `git-acess`, branch `*/main`, and script path `Jenkinsfile`.
-6. Run with `SUBMIT_TO_IQ=false` to test image building and SBOM generation first.
-7. Once the API prerequisite is confirmed, enable `SUBMIT_TO_IQ` and enter the
-   documented `IQ_SBOM_IMPORT_URL` and `IQ_CONTENT_TYPE`.
+9. Run with `RUN_IQ_EVALUATION=false` to test image building and SBOM generation.
+10. Enable `RUN_IQ_EVALUATION`, enter `IQ_INSTANCE_ID` and `IQ_APPLICATION_ID`,
+    then select a licensed `IQ_STAGE` with the intended policy actions.
 
-No Sonatype Jenkins plugin is required for this raw HTTP upload implementation.
-Python uses normal TLS certificate verification; configure system trust for
-internal CAs instead of disabling verification.
+Use Jenkins **Pipeline Syntax** to confirm the generated `nexusPolicyEvaluation`
+arguments match the installed plugin. The documented example accepts a string
+application ID; some generated snippets may use `selectedApplication(...)`.
+If the installed version generates a different application representation,
+substitute the generated form. Only select stages available under your licence.
+
+The plugin uses Jenkins HTTP proxy settings in preference to JVM proxy settings.
+Configure the non-proxy hosts list for IQ where required. Trust internal CAs in
+the relevant Jenkins/scanner JVM rather than disabling certificate verification.
+Jenkins must be able to reach IQ as well as the local Docker engine.
 
 Docker socket access gives the job effectively root-level host privileges. Use
 only an isolated PoC worker with trusted source code. The Syft container accesses
@@ -53,7 +68,11 @@ does not make Docker API access read-only.
 - Builds the `runtime` stage and records its image ID and resolved package lock.
 - Uses `anchore/syft:v1.20.0` to generate `evidence/sbom.cdx.json` from that image.
 - Checks CycloneDX identity and confirms `uuid@11.1.0` is present.
-- Optionally submits the unchanged JSON file using the verified API configuration.
+- Optionally invokes `nexusPolicyEvaluation` against `container:<built-image-tag>`.
+- Sets `failBuildOnNetworkError` and `failBuildOnScanningErrors` to `true`.
+- Leaves final policy status to the plugin: Warn is UNSTABLE, Fail is FAILURE,
+  and No Action does not change the build result. It does not swallow errors or
+  force all completed evaluations to UNSTABLE.
 - Archives evidence, removes per-run application image tags and cleans the workspace.
 
 Application dependencies are pinned at the manifest level. No lockfile has been
@@ -65,24 +84,27 @@ claim that the components have no vulnerabilities.
 ## Evidence and verdict
 
 Build artifacts include the SBOM, its SHA-256 and component count, source commit,
-runtime/scanner image details, resolved package lock and timestamps. When submission
-is enabled, the HTTP response and acceptance summary are also retained. Restrict
-artifact access because evaluation responses may contain internal application data.
+runtime/scanner image details, resolved package lock and timestamps. When IQ
+evaluation is enabled, the application, instance, stage and container target are
+recorded in `evidence/iq-evaluation-target.json`, with evaluation start/end times.
+The plugin publishes **IQ Build Report** and **View Application Report** links.
+Restrict artifact/report access because evidence may contain internal data.
 
 Structural validation is not full CycloneDX JSON-schema validation. Validate the
 file using the matching official schema or an approved CycloneDX validator for
 the formal TC07 evidence bundle.
 
-A successful generation-only run does not test Lifecycle import. Accepted HTTP
-submission deliberately marks the run UNSTABLE because HTTP acceptance is not
-proof of completed evaluation. Confirm the application report, component inventory,
-dependency relationships, policy findings and any unrecognized components in
-Lifecycle before declaring PASS. Compare the SBOM's UUID component with the
-imported inventory and retain the evaluation/report identifier.
+A successful generation-only run does not test Lifecycle analysis. With evaluation
+enabled, inspect **IQ Build Report** in the Jenkins build and follow **View
+Application Report** to confirm the application, stage, components and policy
+findings in IQ. A successful policy evaluation does not imply zero vulnerabilities:
+findings configured with No Action do not fail the build.
 
-This demonstrates an independently generated image SBOM submitted to Lifecycle.
-It does not demonstrate Lifecycle-native SBOM export or regulatory compliance by
-itself; record those as separate checks for the complete TC07 test.
+Compare the independently generated SBOM with the component inventory from the
+container evaluation and record scanner differences. This workflow demonstrates
+SBOM generation plus Lifecycle container analysis, not external SBOM import or
+Lifecycle-native SBOM export. Keep those exchange checks and any regulatory
+evidence assessment separate for the complete TC07 test.
 
 ## Run the API manually
 
